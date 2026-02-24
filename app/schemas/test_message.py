@@ -15,4 +15,3 @@ class TestMessageResponse(BaseModel):
 
     user: str
     response: str
-    products_count: int
