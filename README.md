@@ -1,97 +1,95 @@
-# 🤖 WhatsApp Bot AI (SaaS Ready)
+# 🤖 WhatsApp Bot AI  
+### Modular Conversational Platform for SMEs
 
-Plataforma de bot de WhatsApp con inteligencia artificial orientada a pequeñas y medianas empresas.
+**WhatsApp Bot AI** es una plataforma conversacional modular diseñada para automatizar la atención al cliente de pequeñas y medianas empresas mediante inteligencia artificial.
 
-Este proyecto permite automatizar la atención al cliente, responder consultas frecuentes, gestionar pedidos/reservas y acceder a información del negocio (productos, stock, servicios), todo mediante WhatsApp.
-
-Diseñado con una arquitectura desacoplada que permite cambiar fácilmente:
-
-* Proveedor de IA (OpenAI, Azure, local)
-* Fuente de datos (PostgreSQL, Google Sheets, APIs)
-* Proveedor de mensajería (Twilio, Meta WhatsApp API)
+No es un bot rígido ni específico para un único negocio.  
+Es un núcleo conversacional desacoplado y configurable que puede adaptarse a distintos tipos de empresas mediante configuración y proveedores intercambiables.
 
 ---
 
-## 🚀 Features principales
+## 🎯 Objetivo del Proyecto
 
-* 💬 Atención automática por WhatsApp
-* 🧠 Integración con IA (respuestas inteligentes)
-* 📦 Consulta de productos y stock
-* 🔄 Sugerencias de productos similares
-* 🛒 Toma de pedidos y reservas
-* 👤 Derivación a humano
-* 🧾 Historial de conversaciones (memoria)
-* 🔌 Conexión a múltiples fuentes de datos
-* 🏢 Multiempresa (multi-tenant)
-* ⚙️ Configuración dinámica por negocio
+Construir una base sólida para un sistema SaaS multi-tenant capaz de:
+
+- Automatizar interacciones por WhatsApp
+- Interpretar intención del usuario mediante un sistema de scoring
+- Orquestar flujos conversacionales dinámicos
+- Integrarse con múltiples fuentes de datos
+- Permitir configuración por negocio sin modificar el core
 
 ---
 
 ## 🏗️ Arquitectura
 
-El sistema está basado en una arquitectura desacoplada usando interfaces:
+El sistema está diseñado con principios de:
 
-* `AIProvider` → Motor de IA
-* `DataSource` → Fuente de datos
-* `MessagingProvider` → WhatsApp
+- Clean Architecture  
+- Separación estricta de responsabilidades  
+- Inyección real de dependencias  
+- Interfaces desacopladas  
+- Extensibilidad por proveedor  
 
-El bot funciona mediante un orquestador central que decide cómo responder cada mensaje.
+### Componentes centrales
 
----
+**IntentEngine**  
+Motor de detección de intención con sistema de scoring configurable.
 
-## 🧩 Stack tecnológico
+**FlowManager**  
+Orquestador conversacional responsable de decidir cómo responder cada mensaje.
 
-* **Backend:** FastAPI (Python)
-* **Base de datos:** PostgreSQL
-* **IA:** Azure (inicialmente)
-* **Mensajería:** Twilio (MVP) → Meta API (producción)
-* **Integraciones:** Google Sheets API
+**AIProvider (interface)**  
+Permite intercambiar motores de IA sin modificar la lógica del bot.
 
----
+**DataSource (interface)**  
+Abstrae la fuente de datos (PostgreSQL, Google Sheets, APIs externas).
 
-## 📂 Estructura del proyecto (propuesta)
+**MessagingProvider (interface)**  
+Desacopla la integración con proveedores de WhatsApp.
 
-```
-app/
-│
-├── core/              # Configuración, settings
-├── providers/         # Implementaciones (AI, DB, Messaging)
-├── interfaces/        # Interfaces base (AIProvider, DataSource, etc.)
-├── services/          # Lógica del bot (orquestador)
-├── models/            # Modelos DB
-├── api/               # Endpoints (webhooks)
-├── utils/             # Helpers
-│
-└── main.py            # Entry point
-```
+La lógica del negocio no depende directamente de:
+
+- Proveedor de IA
+- Base de datos específica
+- Servicio de mensajería
 
 ---
 
-## 🧠 Filosofía del proyecto
+## 🧠 Enfoque Conversacional
 
-Este proyecto no es solo un bot, sino una **plataforma adaptable**:
+El sistema no responde únicamente por prompts.
 
-> Un mismo sistema puede servir para múltiples negocios cambiando únicamente la configuración.
+La arquitectura permite:
 
----
-
-## ⚙️ Configuración futura
-
-Cada empresa podrá definir:
-
-* Tipo de negocio (productos / servicios)
-* Fuente de datos
-* Prompt del bot
-* Reglas de atención
+- Detección estructurada de intención
+- Lógica determinística cuando es necesario
+- Respuestas asistidas por IA cuando aporta valor
+- Derivación a humano
+- Escalabilidad hacia memoria conversacional avanzada
 
 ---
 
-## 🤝 Contribuciones
+## 🏢 Orientación SaaS
 
-Proyecto en desarrollo personal con enfoque profesional.
+El proyecto está pensado desde el inicio para:
+
+- Soportar múltiples empresas (multi-tenant)
+- Permitir configuración dinámica por negocio
+- Adaptarse a distintos rubros (productos, servicios, reservas)
+- Escalar hacia una plataforma administrable
 
 ---
 
-## 📌 Autor
+## 🧩 Stack Tecnológico
 
-Tomás Garbellotto
+- Backend: FastAPI  
+- ORM: SQLAlchemy 2.0  
+- Migraciones: Alembic  
+- Configuración tipada: Pydantic Settings  
+- Base de datos: PostgreSQL  
+
+---
+
+## 📌 Visión
+
+Evolucionar desde un bot configurable hacia una **plataforma conversacional empresarial**, donde el núcleo técnico permanezca estable mientras las implementaciones y configuraciones cambian por cliente.
