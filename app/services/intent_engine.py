@@ -21,6 +21,7 @@ class IntentEngine:
                 "saludos",
             ),
             "info_request": (
+                "servicio",
                 "servicios",
                 "producto",
                 "productos",
@@ -60,6 +61,7 @@ class IntentEngine:
                 "comprar",
                 "quiero comprar",
                 "me interesa",
+                "interesado",
             ),
             "confirmation": (
                 "si",

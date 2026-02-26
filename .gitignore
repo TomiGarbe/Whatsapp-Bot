@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
+*.pyd
 
 # Virtual environment
 venv/
@@ -10,6 +13,9 @@ venv/
 
 # Environment variables
 .env
+
+# Alembic cache
+migrations/__pycache__/
 
 # IDE
 .vscode/
