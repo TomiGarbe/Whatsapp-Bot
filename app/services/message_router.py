@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.interfaces.ai_provider import AIProvider
 from app.interfaces.messaging_provider import MessagingProvider
+from app.models.agent import Agent
 from app.models.conversation import Conversation
+from app.models.message import Message
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
 
@@ -150,6 +152,14 @@ class MessageRouter:
             business_id=business_id,
             user_id=user_id,
         )
+        message_text = self._extract_message_text(incoming_message=incoming_message)
+        self._persist_message(
+            db=db,
+            conversation=conversation,
+            sender_type="user",
+            direction="inbound",
+            content=message_text,
+        )
 
         if conversation.control_mode == "human":
             await self.human_support_service.handle_user_human_message(
@@ -163,8 +173,8 @@ class MessageRouter:
         await self._continue_ai_flow(
             db=db,
             phone=phone,
-            incoming_message=incoming_message,
             conversation=conversation,
+            message_text=message_text,
         )
 
     async def _handle_agent_message(
@@ -174,6 +184,17 @@ class MessageRouter:
         phone: str,
         incoming_message: dict[str, Any],
     ) -> None:
+        message_text = self._extract_message_text(incoming_message=incoming_message)
+        conversation = self._resolve_active_conversation_for_agent(db=db, phone=phone)
+        if conversation is not None:
+            self._persist_message(
+                db=db,
+                conversation=conversation,
+                sender_type="agent",
+                direction="inbound",
+                content=message_text,
+            )
+
         await self.human_support_service.handle_agent_message(
             db=db,
             phone=phone,
@@ -185,15 +206,14 @@ class MessageRouter:
         *,
         db: Session,
         phone: str,
-        incoming_message: dict[str, Any],
         conversation: Conversation,
+        message_text: str,
     ) -> None:
         if self.intent_engine is None or self.ai_provider is None or self.messaging_provider is None:
             raise RuntimeError(
                 "MessageRouter requires intent_engine, ai_provider, and messaging_provider for AI flow handling."
             )
 
-        message_text = self._extract_message_text(incoming_message=incoming_message)
         intent = self.intent_engine.detect_intent(message=message_text)
         if intent == "human_handoff":
             await self.human_support_service.request_human_support(
@@ -220,6 +240,13 @@ class MessageRouter:
         else:
             response = flow_response
 
+        self._persist_message(
+            db=db,
+            conversation=conversation,
+            sender_type="assistant",
+            direction="outbound",
+            content=response,
+        )
         await self.messaging_provider.send_message(user=phone, message=response)
         self._last_response_by_user[phone] = response
 
@@ -286,6 +313,50 @@ class MessageRouter:
             raise
         db.refresh(conversation)
         return conversation
+
+    def _resolve_active_conversation_for_agent(self, *, db: Session, phone: str) -> Conversation | None:
+        agent_query = select(Agent).where(
+            Agent.email == phone,
+            Agent.is_active.is_(True),
+        )
+        agent = db.execute(agent_query).scalars().first()
+        if agent is None:
+            return None
+
+        conversation_query = (
+            select(Conversation)
+            .where(
+                Conversation.business_id == agent.business_id,
+                Conversation.assigned_agent_id == agent.id,
+                Conversation.control_mode == "human",
+                Conversation.human_status == "active",
+                Conversation.status == "active",
+            )
+            .order_by(Conversation.started_at.asc())
+            .limit(1)
+        )
+        return db.execute(conversation_query).scalars().first()
+
+    def _persist_message(
+        self,
+        db: Session,
+        conversation: Conversation,
+        sender_type: str,
+        direction: str,
+        content: str,
+    ) -> None:
+        message = Message(
+            conversation_id=conversation.id,
+            sender_type=sender_type,
+            direction=direction,
+            content=content,
+        )
+        db.add(message)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
     def _default_sender_resolver(self, phone: str, incoming_message: dict[str, Any]) -> SenderType:
         del phone

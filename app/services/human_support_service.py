@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.interfaces.messaging_provider import MessagingProvider
 from app.models.agent import Agent
 from app.models.conversation import Conversation
+from app.models.message import Message
 from app.models.user import User
 from app.services.message_router import HumanSupportServiceProtocol
 
@@ -274,6 +275,18 @@ class HumanSupportService(HumanSupportServiceProtocol):
             return
 
         await self.messaging_provider.send_message(user=user_phone, message=message_text)
+        outbound_message = Message(
+            conversation_id=conversation.id,
+            sender_type="agent",
+            direction="outbound",
+            content=message_text,
+        )
+        db.add(outbound_message)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         logger.info(
             "Forwarded agent %s message to user %s for conversation %s.",
             agent.id,
