@@ -25,6 +25,14 @@ SenderResolver = Callable[[str, dict[str, Any]], SenderType]
 class HumanSupportServiceProtocol(Protocol):
     """Contract for human-support handoff behavior."""
 
+    async def request_human_support(
+        self,
+        *,
+        db: Session,
+        conversation: Conversation,
+    ) -> None:
+        """Request transfer of an AI conversation into human-support mode."""
+
     async def handle_agent_message(
         self,
         *,
@@ -47,6 +55,18 @@ class HumanSupportServiceProtocol(Protocol):
 
 class StubHumanSupportService:
     """Temporary human-support implementation until real logic is added."""
+
+    async def request_human_support(
+        self,
+        *,
+        db: Session,
+        conversation: Conversation,
+    ) -> None:
+        logger.info(
+            "Human support requested for conversation %s. Human support workflow pending.",
+            conversation.id,
+        )
+        del db
 
     async def handle_agent_message(
         self,
@@ -141,6 +161,7 @@ class MessageRouter:
             return
 
         await self._continue_ai_flow(
+            db=db,
             phone=phone,
             incoming_message=incoming_message,
             conversation=conversation,
@@ -162,6 +183,7 @@ class MessageRouter:
     async def _continue_ai_flow(
         self,
         *,
+        db: Session,
         phone: str,
         incoming_message: dict[str, Any],
         conversation: Conversation,
@@ -173,6 +195,13 @@ class MessageRouter:
 
         message_text = self._extract_message_text(incoming_message=incoming_message)
         intent = self.intent_engine.detect_intent(message=message_text)
+        if intent == "human_handoff":
+            await self.human_support_service.request_human_support(
+                db=db,
+                conversation=conversation,
+            )
+            return
+
         flow_response = await self.flow_manager.handle(intent=intent, user=phone, message=message_text)
 
         if flow_response is None:

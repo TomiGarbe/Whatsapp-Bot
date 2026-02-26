@@ -9,6 +9,7 @@ from app.interfaces.messaging_provider import MessagingProvider
 from sqlalchemy.orm import Session
 
 from app.services.flow_manager import FlowManager
+from app.services.human_support_service import HumanSupportService
 from app.services.intent_engine import IntentEngine
 from app.services.message_router import HumanSupportServiceProtocol, MessageRouter, SenderResolver
 
@@ -25,9 +26,12 @@ class BotService:
         human_support_service: HumanSupportServiceProtocol | None = None,
         sender_resolver: SenderResolver | None = None,
     ) -> None:
+        resolved_human_support_service = human_support_service or HumanSupportService(
+            messaging_provider=messaging_provider
+        )
         self.message_router = MessageRouter(
             flow_manager=flow_manager,
-            human_support_service=human_support_service,
+            human_support_service=resolved_human_support_service,
             sender_resolver=sender_resolver,
             intent_engine=intent_engine,
             ai_provider=ai_provider,
