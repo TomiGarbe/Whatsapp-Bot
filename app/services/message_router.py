@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Literal, Protocol
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.interfaces.ai_provider import AIProvider
 from app.interfaces.messaging_provider import MessagingProvider
-from app.services.conversation_manager import ConversationContext, ConversationManager
+from app.models.conversation import Conversation
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
 
@@ -20,15 +25,22 @@ SenderResolver = Callable[[str, dict[str, Any]], SenderType]
 class HumanSupportServiceProtocol(Protocol):
     """Contract for human-support handoff behavior."""
 
-    async def handle_agent_message(self, *, phone: str, incoming_message: dict[str, Any]) -> None:
+    async def handle_agent_message(
+        self,
+        *,
+        db: Session,
+        phone: str,
+        incoming_message: dict[str, Any],
+    ) -> None:
         """Handle inbound messages coming from an agent."""
 
     async def handle_user_human_message(
         self,
         *,
+        db: Session,
         phone: str,
         incoming_message: dict[str, Any],
-        conversation: ConversationContext,
+        conversation: Conversation,
     ) -> None:
         """Handle user messages when conversation is under human control."""
 
@@ -36,21 +48,30 @@ class HumanSupportServiceProtocol(Protocol):
 class StubHumanSupportService:
     """Temporary human-support implementation until real logic is added."""
 
-    async def handle_agent_message(self, *, phone: str, incoming_message: dict[str, Any]) -> None:
+    async def handle_agent_message(
+        self,
+        *,
+        db: Session,
+        phone: str,
+        incoming_message: dict[str, Any],
+    ) -> None:
         logger.info("Agent message received for %s. Human support workflow pending.", phone)
+        del db
         del incoming_message
 
     async def handle_user_human_message(
         self,
         *,
+        db: Session,
         phone: str,
         incoming_message: dict[str, Any],
-        conversation: ConversationContext,
+        conversation: Conversation,
     ) -> None:
         logger.info(
             "User message received in human mode for %s. Human support workflow pending.",
             phone,
         )
+        del db
         del incoming_message
         del conversation
 
@@ -60,7 +81,6 @@ class MessageRouter:
 
     def __init__(
         self,
-        conversation_manager: ConversationManager,
         flow_manager: FlowManager,
         human_support_service: HumanSupportServiceProtocol | None = None,
         sender_resolver: SenderResolver | None = None,
@@ -69,7 +89,6 @@ class MessageRouter:
         ai_provider: AIProvider | None = None,
         messaging_provider: MessagingProvider | None = None,
     ) -> None:
-        self.conversation_manager = conversation_manager
         self.flow_manager = flow_manager
         self.human_support_service = human_support_service or StubHumanSupportService()
         self.sender_resolver = sender_resolver or self._default_sender_resolver
@@ -78,39 +97,74 @@ class MessageRouter:
         self.messaging_provider = messaging_provider
         self._last_response_by_user: dict[str, str] = {}
 
-    async def route_message(self, incoming_message: dict[str, Any]) -> None:
+    async def route_message(self, db: Session, incoming_message: dict[str, Any]) -> None:
         """Route one incoming webhook payload to the appropriate processing path."""
         phone = self._extract_sender_phone(incoming_message=incoming_message)
         sender_type = self.sender_resolver(phone, incoming_message)
 
         if sender_type == "agent":
-            await self._handle_agent_message(phone=phone, incoming_message=incoming_message)
+            await self._handle_agent_message(
+                db=db,
+                phone=phone,
+                incoming_message=incoming_message,
+            )
             return
 
-        await self._handle_user_message(phone=phone, incoming_message=incoming_message)
+        await self._handle_user_message(
+            db=db,
+            phone=phone,
+            incoming_message=incoming_message,
+        )
 
-    async def _handle_user_message(self, *, phone: str, incoming_message: dict[str, Any]) -> None:
-        conversation = self.conversation_manager.get_or_create_active_conversation(user=phone)
+    async def _handle_user_message(
+        self,
+        *,
+        db: Session,
+        phone: str,
+        incoming_message: dict[str, Any],
+    ) -> None:
+        business_id = self._extract_required_uuid(incoming_message=incoming_message, key="business_id")
+        user_id = self._extract_required_uuid(incoming_message=incoming_message, key="user_id")
+        conversation = self._get_or_create_active_conversation(
+            db=db,
+            business_id=business_id,
+            user_id=user_id,
+        )
 
         if conversation.control_mode == "human":
             await self.human_support_service.handle_user_human_message(
+                db=db,
                 phone=phone,
                 incoming_message=incoming_message,
                 conversation=conversation,
             )
             return
 
-        await self._continue_ai_flow(phone=phone, incoming_message=incoming_message, conversation=conversation)
+        await self._continue_ai_flow(
+            phone=phone,
+            incoming_message=incoming_message,
+            conversation=conversation,
+        )
 
-    async def _handle_agent_message(self, *, phone: str, incoming_message: dict[str, Any]) -> None:
-        await self.human_support_service.handle_agent_message(phone=phone, incoming_message=incoming_message)
+    async def _handle_agent_message(
+        self,
+        *,
+        db: Session,
+        phone: str,
+        incoming_message: dict[str, Any],
+    ) -> None:
+        await self.human_support_service.handle_agent_message(
+            db=db,
+            phone=phone,
+            incoming_message=incoming_message,
+        )
 
     async def _continue_ai_flow(
         self,
         *,
         phone: str,
         incoming_message: dict[str, Any],
-        conversation: ConversationContext,
+        conversation: Conversation,
     ) -> None:
         if self.intent_engine is None or self.ai_provider is None or self.messaging_provider is None:
             raise RuntimeError(
@@ -124,7 +178,12 @@ class MessageRouter:
         if flow_response is None:
             context = {
                 "user": phone,
-                "state": conversation.state,
+                "conversation_id": str(conversation.id),
+                "business_id": str(conversation.business_id),
+                "user_id": str(conversation.user_id),
+                "control_mode": conversation.control_mode,
+                "human_status": conversation.human_status,
+                "context": conversation.context,
                 "intent": intent,
                 "mode": self.flow_manager.mode,
             }
@@ -154,6 +213,50 @@ class MessageRouter:
                 if text:
                     return text
         raise ValueError("Incoming message is missing message content.")
+
+    def _extract_required_uuid(self, *, incoming_message: dict[str, Any], key: str) -> UUID:
+        raw_value = incoming_message.get(key)
+        if raw_value is None:
+            raise ValueError(f"Incoming message is missing required '{key}' value.")
+        try:
+            return UUID(str(raw_value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Incoming message has invalid UUID for '{key}'.") from exc
+
+    def _get_or_create_active_conversation(
+        self,
+        db: Session,
+        business_id: UUID,
+        user_id: UUID,
+    ) -> Conversation:
+        query = select(Conversation).where(
+            Conversation.business_id == business_id,
+            Conversation.user_id == user_id,
+            Conversation.status == "active",
+        )
+        conversation = db.execute(query).scalar_one_or_none()
+        if conversation is not None:
+            return conversation
+
+        conversation = Conversation(
+            business_id=business_id,
+            user_id=user_id,
+            status="active",
+            control_mode="ai",
+            human_status=None,
+            mode=self.flow_manager.mode,
+        )
+        db.add(conversation)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing_conversation = db.execute(query).scalar_one_or_none()
+            if existing_conversation is not None:
+                return existing_conversation
+            raise
+        db.refresh(conversation)
+        return conversation
 
     def _default_sender_resolver(self, phone: str, incoming_message: dict[str, Any]) -> SenderType:
         del phone
