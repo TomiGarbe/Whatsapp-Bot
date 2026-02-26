@@ -1,47 +1,52 @@
-"""Core bot orchestration service."""
+"""Bot service entrypoint that delegates routing to MessageRouter."""
+
+from __future__ import annotations
+
+from typing import Any
 
 from app.interfaces.ai_provider import AIProvider
 from app.interfaces.messaging_provider import MessagingProvider
+from app.services.conversation_manager import ConversationManager
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
+from app.services.message_router import HumanSupportServiceProtocol, MessageRouter, SenderResolver
 
 
 class BotService:
-    """Coordinates intent detection, state flow, and response delivery."""
+    """Thin facade that forwards webhook payloads to MessageRouter."""
 
     def __init__(
         self,
         ai_provider: AIProvider,
         messaging_provider: MessagingProvider,
         intent_engine: IntentEngine,
+        conversation_manager: ConversationManager,
         flow_manager: FlowManager,
+        human_support_service: HumanSupportServiceProtocol | None = None,
+        sender_resolver: SenderResolver | None = None,
     ) -> None:
-        self.ai_provider = ai_provider
-        self.messaging_provider = messaging_provider
-        self.intent_engine = intent_engine
-        self.flow_manager = flow_manager
+        self.message_router = MessageRouter(
+            conversation_manager=conversation_manager,
+            flow_manager=flow_manager,
+            human_support_service=human_support_service,
+            sender_resolver=sender_resolver,
+            intent_engine=intent_engine,
+            ai_provider=ai_provider,
+            messaging_provider=messaging_provider,
+        )
+
+    async def handle_webhook(self, incoming_message: dict[str, Any]) -> None:
+        """Receive webhook payload and route it through MessageRouter."""
+        await self.message_router.route_message(incoming_message=incoming_message)
 
     async def handle_message(self, user: str, message: str) -> dict[str, str]:
-        """Route one inbound message through intent + conversation flow."""
-        intent = self.intent_engine.detect_intent(message=message)
-        flow_response = await self.flow_manager.handle(intent=intent, user=user, message=message)
-
-        if flow_response is None:
-            # Fallback path that will later be replaced by a real AI provider.
-            current_state = self.flow_manager.conversation_manager.get_state(user=user)
-            context = {
-                "user": user,
-                "state": current_state,
-                "intent": intent,
-                "mode": self.flow_manager.mode,
-            }
-            response = await self.ai_provider.generate_response(message=message, context=context)
-        else:
-            response = flow_response
-
-        await self.messaging_provider.send_message(user=user, message=response)
-        return {
+        """Compatibility adapter for existing test endpoint payload format."""
+        incoming_message = {
             "user": user,
-            "response": response,
+            "message": message,
+            "sender_type": "user",
         }
+        await self.handle_webhook(incoming_message=incoming_message)
+        response = self.message_router.get_last_response(user=user) or ""
+        return {"user": user, "response": response}
 

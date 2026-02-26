@@ -27,6 +27,7 @@ bot_service = BotService(
     ai_provider=MockAIProvider(),
     messaging_provider=MockMessagingProvider(),
     intent_engine=intent_engine,
+    conversation_manager=conversation_manager,
     flow_manager=flow_manager,
 )
 
