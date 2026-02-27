@@ -12,7 +12,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    from app.models.agent import Agent
     from app.models.conversation import Conversation
     from app.models.user import User
 
@@ -23,7 +22,7 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         CheckConstraint(
-            "sender_type in ('user', 'agent', 'assistant', 'system')",
+            "sender_type in ('user', 'advisor', 'assistant', 'system')",
             name="ck_messages_sender_type",
         ),
         CheckConstraint(
@@ -46,11 +45,6 @@ class Message(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,
-    )
     sender_type: Mapped[str] = mapped_column(String(20), nullable=False)
     direction: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -60,5 +54,4 @@ class Message(Base):
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
     user: Mapped["User | None"] = relationship("User", back_populates="messages")
-    agent: Mapped["Agent | None"] = relationship("Agent", back_populates="messages")
 

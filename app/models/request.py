@@ -12,7 +12,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    from app.models.agent import Agent
     from app.models.business import Business
     from app.models.conversation import Conversation
     from app.models.item import Item
@@ -56,11 +55,6 @@ class Request(Base):
         ForeignKey("items.id", ondelete="SET NULL"),
         nullable=True,
     )
-    validated_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,
-    )
     type: Mapped[str] = mapped_column(String(40), nullable=False, default="generic")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     scheduled_for: Mapped[Any | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
@@ -79,5 +73,4 @@ class Request(Base):
     user: Mapped["User"] = relationship("User", back_populates="requests")
     conversation: Mapped["Conversation | None"] = relationship("Conversation", back_populates="requests")
     item: Mapped["Item | None"] = relationship("Item", back_populates="requests")
-    validated_by_agent: Mapped["Agent | None"] = relationship("Agent", back_populates="validated_requests")
 

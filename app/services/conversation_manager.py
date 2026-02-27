@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
-
-ControlMode = Literal["ai", "human"]
-HumanStatus = Literal["waiting", "active"]
 
 
 @dataclass(slots=True)
@@ -15,9 +11,6 @@ class ConversationContext:
 
     user: str
     state: str = "idle"
-    control_mode: ControlMode = "ai"
-    human_status: HumanStatus | None = None
-    assigned_agent_id: str | None = None
 
 
 class ConversationManager:

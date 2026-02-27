@@ -17,7 +17,6 @@ class FlowManager:
         "pending_human_validation",
         "completed",
         "cancelled",
-        "human_requested",
     )
 
     def __init__(
@@ -69,10 +68,6 @@ class FlowManager:
             self.conversation_manager.reset_state(user=user)
             self.conversation_manager.set_state(user=user, state="cancelled")
             return "Operacion cancelada. Si quieres, puedo ayudarte a iniciar una nueva solicitud."
-
-        if intent == "human_handoff":
-            self.conversation_manager.set_state(user=user, state="human_requested")
-            return "Entendido. Un asesor se comunicara contigo en breve."
 
         # Fallback (and unknown intents) are delegated to AI provider by BotService.
         return None

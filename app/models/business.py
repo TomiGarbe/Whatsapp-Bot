@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    from app.models.agent import Agent
+    from app.models.advisor import Advisor
     from app.models.conversation import Conversation
     from app.models.item import Item
     from app.models.plan import Plan
@@ -70,7 +70,7 @@ class Business(Base):
         cascade="all, delete-orphan",
     )
     users: Mapped[list["User"]] = relationship("User", back_populates="business", cascade="all, delete-orphan")
-    agents: Mapped[list["Agent"]] = relationship("Agent", back_populates="business", cascade="all, delete-orphan")
+    advisors: Mapped[list["Advisor"]] = relationship("Advisor", back_populates="business", cascade="all, delete-orphan")
     conversations: Mapped[list["Conversation"]] = relationship(
         "Conversation",
         back_populates="business",
