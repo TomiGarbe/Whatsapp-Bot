@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.providers.ai.mock_ai import MockAIProvider
+from app.providers.ai.azure_ai import AzureAIProvider
 from app.providers.data_sources.mock_data import MockDataSource
 from app.providers.messaging.mock_messaging import MockMessagingProvider
 from app.services.bot_service import BotService
@@ -28,7 +28,7 @@ flow_manager = FlowManager(
 )
 
 bot_service = BotService(
-    ai_provider=MockAIProvider(),
+    ai_provider=AzureAIProvider(),
     messaging_provider=MockMessagingProvider(),
     intent_engine=intent_engine,
     flow_manager=flow_manager,
