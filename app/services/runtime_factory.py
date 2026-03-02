@@ -16,6 +16,7 @@ from app.services.bot_service import BotService
 from app.services.conversation_manager import ConversationManager
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
+from app.services.runtime_ai_context import RuntimeAIContext
 from app.services.runtime_business_profile import RuntimeBusinessProfile
 
 
@@ -23,6 +24,7 @@ def create_bot_service(*, db: Session, business: Business) -> BotService:
     """Build a fresh bot service graph for one inbound message."""
     business_config = _get_business_config(db=db, business_id=business.id)
     profile = RuntimeBusinessProfile.from_business_config(business_config=business_config)
+    ai_context = RuntimeAIContext.from_business(business=business, profile=profile)
     data_source = SQLDataSource(db=db, business_id=business.id)
     conversation_manager = ConversationManager(db=db, business_id=business.id)
     flow_manager = FlowManager(
@@ -33,7 +35,7 @@ def create_bot_service(*, db: Session, business: Business) -> BotService:
     )
 
     return BotService(
-        ai_provider=create_ai_provider(),
+        ai_provider=create_ai_provider(ai_context=ai_context),
         messaging_provider=create_messaging_provider(
             business_whatsapp_number=business.whatsapp_number,
         ),
@@ -42,17 +44,17 @@ def create_bot_service(*, db: Session, business: Business) -> BotService:
     )
 
 
-def create_ai_provider():
+def create_ai_provider(*, ai_context: RuntimeAIContext):
     """Select AI provider based on runtime configuration."""
     provider_name = settings.ai_provider.strip().lower()
     if provider_name == "auto":
         if settings.environment.strip().lower() == "production":
-            return AzureAIProvider()
+            return AzureAIProvider(context=ai_context)
         if settings.azure_openai_api_key:
-            return AzureAIProvider()
+            return AzureAIProvider(context=ai_context)
         return MockAIProvider()
     if provider_name == "azure":
-        return AzureAIProvider()
+        return AzureAIProvider(context=ai_context)
     if provider_name == "mock":
         return MockAIProvider()
     raise ValueError(f"Unsupported AI_PROVIDER '{settings.ai_provider}'.")
