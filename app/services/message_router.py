@@ -102,7 +102,8 @@ class MessageRouter:
             return
 
         intent = self.intent_engine.detect_intent(message=message_text)
-        if intent == "human_handoff":
+        should_route_handoff, blocked_handoff_message = self._evaluate_handoff(intent=intent)
+        if should_route_handoff:
             advisor = self._get_active_advisor(db=db, business_id=conversation.business_id)
             conversation.control_mode = "human"
             conversation.assigned_advisor_id = advisor.id if advisor is not None else None
@@ -113,7 +114,7 @@ class MessageRouter:
                 db.rollback()
                 raise
 
-            response = "Un asesor continuará la conversación."
+            response = self._get_handoff_acknowledgement()
             self._persist_message(
                 db=db,
                 conversation=conversation,
@@ -132,11 +133,24 @@ class MessageRouter:
                     fallback_phone=phone,
                 )
                 advisor_message = (
-                    "Nueva conversación en modo humano.\n"
+                    "Nueva conversacion en modo humano.\n"
                     f"Cliente: {client_name}\n"
-                    f"Teléfono: {client_phone}"
+                    f"Telefono: {client_phone}"
                 )
                 await self.messaging_provider.send_message(user=advisor.phone.strip(), message=advisor_message)
+            return
+        if blocked_handoff_message is not None:
+            response = blocked_handoff_message
+            self._persist_message(
+                db=db,
+                conversation=conversation,
+                sender_type="assistant",
+                direction="outbound",
+                content=response,
+                payload={"intent": intent},
+            )
+            await self.messaging_provider.send_message(user=phone, message=response)
+            self._last_response_by_user[phone] = response
             return
 
         flow_response = await self.flow_manager.handle(
@@ -170,6 +184,26 @@ class MessageRouter:
         )
         await self.messaging_provider.send_message(user=phone, message=response)
         self._last_response_by_user[phone] = response
+
+    def _evaluate_handoff(self, *, intent: str) -> tuple[bool, str | None]:
+        evaluator = getattr(self.flow_manager, "evaluate_handoff", None)
+        if not callable(evaluator):
+            return intent == "human_handoff", None
+
+        decision = evaluator(intent=intent)
+        should_route = bool(getattr(decision, "should_route_to_human", False))
+        blocked_message_raw = getattr(decision, "blocked_message", None)
+        if isinstance(blocked_message_raw, str) and blocked_message_raw.strip():
+            return should_route, blocked_message_raw
+        return should_route, None
+
+    def _get_handoff_acknowledgement(self) -> str:
+        resolver = getattr(self.flow_manager, "get_handoff_acknowledgement", None)
+        if callable(resolver):
+            response = resolver()
+            if isinstance(response, str) and response.strip():
+                return response
+        return "Un asesor continuara la conversacion."
 
     async def _handle_advisor_message(
         self,
@@ -587,3 +621,4 @@ class MessageRouter:
             return self._resolve_active_conversation(db=db, incoming_message=incoming_message)
         except ValueError:
             return None
+

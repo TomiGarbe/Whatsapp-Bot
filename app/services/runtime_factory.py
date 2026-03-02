@@ -16,18 +16,20 @@ from app.services.bot_service import BotService
 from app.services.conversation_manager import ConversationManager
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
+from app.services.runtime_business_profile import RuntimeBusinessProfile
 
 
 def create_bot_service(*, db: Session, business: Business) -> BotService:
     """Build a fresh bot service graph for one inbound message."""
-    mode = _resolve_business_mode(db=db, business_id=business.id)
+    business_config = _get_business_config(db=db, business_id=business.id)
+    profile = RuntimeBusinessProfile.from_business_config(business_config=business_config)
     data_source = SQLDataSource(db=db, business_id=business.id)
     conversation_manager = ConversationManager(db=db, business_id=business.id)
     flow_manager = FlowManager(
         business_id=business.id,
         conversation_manager=conversation_manager,
         data_source=data_source,
-        mode=mode,
+        profile=profile,
     )
 
     return BotService(
@@ -72,17 +74,10 @@ def create_messaging_provider(*, business_whatsapp_number: str | None):
     raise ValueError(f"Unsupported MESSAGING_PROVIDER '{settings.messaging_provider}'.")
 
 
-def _resolve_business_mode(*, db: Session, business_id) -> str:
+def _get_business_config(*, db: Session, business_id) -> BusinessConfig | None:
     query = (
-        select(BusinessConfig.mode)
+        select(BusinessConfig)
         .where(BusinessConfig.business_id == business_id)
         .limit(1)
     )
-    mode = db.execute(query).scalars().first()
-    if not isinstance(mode, str):
-        return FlowManager.ASSISTED_MODE
-
-    normalized_mode = mode.strip().lower()
-    if normalized_mode != FlowManager.ASSISTED_MODE:
-        return FlowManager.ASSISTED_MODE
-    return normalized_mode
+    return db.execute(query).scalars().first()

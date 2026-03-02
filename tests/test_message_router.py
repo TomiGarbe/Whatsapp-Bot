@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import unittest
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,9 +19,30 @@ class StubFlowManager:
 
     mode = "assisted"
 
-    def __init__(self, responses: dict[str, str | None] | None = None) -> None:
+    def __init__(
+        self,
+        responses: dict[str, str | None] | None = None,
+        *,
+        handoff_enabled: bool = True,
+    ) -> None:
         self.responses = responses or {}
+        self.handoff_enabled = handoff_enabled
+        self.handoff_acknowledgement = "Te paso con un asesor para continuar la conversacion."
+        self.handoff_blocked_message = "En este momento no tenemos derivacion a asesores."
         self.calls: list[dict[str, str]] = []
+
+    def evaluate_handoff(self, *, intent: str) -> "StubHandoffDecision":
+        if intent != "human_handoff":
+            return StubHandoffDecision(should_route_to_human=False)
+        if self.handoff_enabled:
+            return StubHandoffDecision(should_route_to_human=True)
+        return StubHandoffDecision(
+            should_route_to_human=False,
+            blocked_message=self.handoff_blocked_message,
+        )
+
+    def get_handoff_acknowledgement(self) -> str:
+        return self.handoff_acknowledgement
 
     async def handle(
         self,
@@ -33,6 +55,14 @@ class StubFlowManager:
         del conversation
         self.calls.append({"intent": intent, "user": user, "message": message})
         return self.responses.get(intent)
+
+
+@dataclass(frozen=True)
+class StubHandoffDecision:
+    """Simple decision object compatible with FlowManager handoff contract."""
+
+    should_route_to_human: bool
+    blocked_message: str | None = None
 
 
 class StubAIProvider:
@@ -220,7 +250,12 @@ class RecordingMessageRouter(MessageRouter):
 class MessageRouterTestCase(unittest.IsolatedAsyncioTestCase):
     """Covers user AI path, handoff, advisor storage, and manual close command."""
 
-    def _build_router(self, *, flow_responses: dict[str, str | None] | None = None) -> tuple[
+    def _build_router(
+        self,
+        *,
+        flow_responses: dict[str, str | None] | None = None,
+        handoff_enabled: bool = True,
+    ) -> tuple[
         RecordingMessageRouter,
         StubSession,
         StubFlowManager,
@@ -242,7 +277,10 @@ class MessageRouterTestCase(unittest.IsolatedAsyncioTestCase):
             assigned_advisor_id=None,
         )
         db = StubSession()
-        flow_manager = StubFlowManager(responses=flow_responses)
+        flow_manager = StubFlowManager(
+            responses=flow_responses,
+            handoff_enabled=handoff_enabled,
+        )
         ai_provider = StubAIProvider()
         messaging_provider = StubMessagingProvider()
         router = RecordingMessageRouter(
@@ -315,7 +353,36 @@ class MessageRouterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messaging_provider.sent_messages[0]["user"], phone)
         self.assertEqual(messaging_provider.sent_messages[1]["user"], advisor_phone)
         self.assertIn("Cliente: Carlos Perez", messaging_provider.sent_messages[1]["message"])
-        self.assertIn("Teléfono: +5491122233344", messaging_provider.sent_messages[1]["message"])
+        self.assertIn("Telefono: +5491122233344", messaging_provider.sent_messages[1]["message"])
+
+    async def test_user_handoff_disabled_replies_without_human_assignment(self) -> None:
+        router, db, flow_manager, ai_provider, messaging_provider, business_id, user_id, phone = self._build_router(
+            handoff_enabled=False
+        )
+
+        await router.route_message(
+            db=db,
+            incoming_message={
+                "business_id": str(business_id),
+                "user_id": str(user_id),
+                "phone": phone,
+                "message": "quiero hablar con un asesor humano",
+                "message_id": "wamid.003",
+                "timestamp": "1700000002",
+            },
+        )
+
+        self.assertEqual(router.conversation.control_mode, "ai")
+        self.assertIsNone(router.conversation.assigned_advisor_id)
+        self.assertEqual(db.commit_calls, 0)
+        self.assertEqual(len(flow_manager.calls), 0)
+        self.assertEqual(len(ai_provider.calls), 0)
+        self.assertEqual(len(router.persisted_messages), 2)
+        self.assertEqual(router.persisted_messages[1]["content"], flow_manager.handoff_blocked_message)
+        self.assertEqual(
+            messaging_provider.sent_messages,
+            [{"user": phone, "message": flow_manager.handoff_blocked_message}],
+        )
 
     async def test_advisor_message_path_stores_without_ai(self) -> None:
         router, db, flow_manager, ai_provider, messaging_provider, business_id, user_id, phone = self._build_router()
@@ -418,3 +485,4 @@ class MessageRouterTestCase(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
