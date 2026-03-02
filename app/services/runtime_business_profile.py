@@ -22,6 +22,7 @@ class RuntimeBusinessProfile:
     mode: str = ASSISTED_MODE
     handoff_enabled: bool = True
     tone: str = CERCANO_TONE
+    show_prices: bool = False
 
     @classmethod
     def from_business_config(
@@ -39,10 +40,16 @@ class RuntimeBusinessProfile:
             assisted_config=business_config.assisted_config,
             autonomous_config=business_config.autonomous_config,
         )
+        show_prices = cls._resolve_show_prices(
+            mode=mode,
+            assisted_config=business_config.assisted_config,
+            autonomous_config=business_config.autonomous_config,
+        )
         return cls(
             mode=mode,
             handoff_enabled=bool(business_config.handoff_enabled),
             tone=tone,
+            show_prices=show_prices,
         )
 
     @classmethod
@@ -86,9 +93,44 @@ class RuntimeBusinessProfile:
             return None
         return normalized_tone
 
+    @classmethod
+    def _resolve_show_prices(
+        cls,
+        *,
+        mode: str,
+        assisted_config: Any,
+        autonomous_config: Any,
+    ) -> bool:
+        assisted = cls._as_dict(assisted_config)
+        autonomous = cls._as_dict(autonomous_config)
+        mode_config = assisted if mode == cls.ASSISTED_MODE else autonomous
+
+        for raw_value in (
+            mode_config.get("show_prices"),
+            assisted.get("show_prices"),
+            autonomous.get("show_prices"),
+        ):
+            resolved = cls._to_optional_bool(raw_value)
+            if resolved is not None:
+                return resolved
+        return False
+
+    @staticmethod
+    def _to_optional_bool(raw_value: Any) -> bool | None:
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, (int, float)) and raw_value in {0, 1}:
+            return bool(raw_value)
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if normalized in {"true", "1", "yes", "si", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+        return None
+
     @staticmethod
     def _as_dict(raw_value: Any) -> dict[str, Any]:
         if isinstance(raw_value, dict):
             return raw_value
         return {}
-

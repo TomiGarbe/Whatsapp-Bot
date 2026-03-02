@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.conversation import Conversation
+from app.models.message import Message
 
 
 class ConversationManager:
@@ -64,6 +66,29 @@ class ConversationManager:
         context.update(values)
         conversation.context = context
         self._persist(conversation=conversation)
+
+    async def get_recent_messages(
+        self,
+        *,
+        conversation: Conversation,
+        limit: int = 8,
+    ) -> list[Message]:
+        """Return recent user/assistant messages in chronological order."""
+        self._assert_business_scope(conversation=conversation)
+        if limit <= 0:
+            return []
+
+        query = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.sender_type.in_(("user", "assistant")),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        recent_desc = self.db.execute(query).scalars().all()
+        return list(reversed(recent_desc))
 
     def _persist(self, *, conversation: Conversation) -> None:
         self.db.add(conversation)

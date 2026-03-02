@@ -18,7 +18,10 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.services.flow_manager import FlowManager
+from app.services.conversation_memory import ConversationMemoryBuilder
 from app.services.intent_engine import IntentEngine
+from app.services.retrieval import RetrievalResult
+from app.services.runtime_business_profile import RuntimeBusinessProfile
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,7 @@ class MessageRouter:
             return
 
         intent = self.intent_engine.detect_intent(message=message_text)
+        retrieval = await self._retrieve_relevant_context(message_text=message_text)
         should_route_handoff, blocked_handoff_message = self._evaluate_handoff(intent=intent)
         if should_route_handoff:
             advisor = self._get_active_advisor(db=db, business_id=conversation.business_id)
@@ -153,26 +157,31 @@ class MessageRouter:
             self._last_response_by_user[phone] = response
             return
 
-        flow_response = await self.flow_manager.handle(
-            intent=intent,
-            user=phone,
-            message=message_text,
-            conversation=conversation,
-        )
-        if flow_response is None:
-            context = {
-                "user": phone,
-                "conversation_id": str(conversation.id),
-                "business_id": str(conversation.business_id),
-                "user_id": str(conversation.user_id),
-                "control_mode": conversation.control_mode,
-                "context": conversation.context,
-                "intent": intent,
-                "mode": self.flow_manager.mode,
-            }
-            response = await self.ai_provider.generate_response(message=message_text, context=context)
+        if self._is_structured_intent(intent=intent):
+            flow_response = await self.flow_manager.handle(
+                intent=intent,
+                user=phone,
+                message=message_text,
+                conversation=conversation,
+            )
+            if flow_response is None:
+                response = await self._generate_ai_with_retrieval(
+                    phone=phone,
+                    message_text=message_text,
+                    intent=intent,
+                    conversation=conversation,
+                    retrieval=retrieval,
+                )
+            else:
+                response = flow_response
         else:
-            response = flow_response
+            response = await self._generate_ai_with_retrieval(
+                phone=phone,
+                message_text=message_text,
+                intent=intent,
+                conversation=conversation,
+                retrieval=retrieval,
+            )
 
         self._persist_message(
             db=db,
@@ -204,6 +213,119 @@ class MessageRouter:
             if isinstance(response, str) and response.strip():
                 return response
         return "Un asesor continuara la conversacion."
+
+    def _is_structured_intent(self, *, intent: str) -> bool:
+        return intent in {"booking_intent", "confirmation", "cancellation"}
+
+    async def _retrieve_relevant_context(self, *, message_text: str) -> RetrievalResult:
+        data_source = getattr(self.flow_manager, "data_source", None)
+        retriever = getattr(data_source, "retrieve_relevant_context", None)
+        if not callable(retriever):
+            return self._empty_retrieval_result()
+
+        try:
+            retrieval = await retriever(query=message_text)
+        except Exception:
+            logger.exception("Failed to retrieve tenant context for message '%s'.", message_text)
+            return self._empty_retrieval_result()
+
+        if isinstance(retrieval, RetrievalResult):
+            return retrieval
+        return self._empty_retrieval_result()
+
+    def _empty_retrieval_result(self) -> RetrievalResult:
+        return RetrievalResult(
+            matched_items=[],
+            all_items=[],
+            match_confidence="none",
+        )
+
+    async def _generate_ai_with_retrieval(
+        self,
+        *,
+        phone: str,
+        message_text: str,
+        intent: str,
+        conversation: Conversation,
+        retrieval: RetrievalResult,
+    ) -> str:
+        profile = getattr(self.flow_manager, "profile", RuntimeBusinessProfile())
+        memory_block = await self._build_memory_block(conversation=conversation)
+        filtered_retrieval = self._filter_retrieval_for_profile(
+            retrieval=retrieval,
+            profile=profile,
+        )
+        generator = getattr(self.ai_provider, "generate_with_retrieval", None)
+        if callable(generator):
+            try:
+                return await generator(
+                    user_message=message_text,
+                    retrieval=filtered_retrieval,
+                    profile=profile,
+                    memory_block=memory_block,
+                )
+            except TypeError:
+                return await generator(
+                    user_message=message_text,
+                    retrieval=filtered_retrieval,
+                    profile=profile,
+                )
+
+        context = {
+            "user": phone,
+            "conversation_id": str(conversation.id),
+            "business_id": str(conversation.business_id),
+            "user_id": str(conversation.user_id),
+            "control_mode": conversation.control_mode,
+            "context": conversation.context,
+            "intent": intent,
+            "mode": self.flow_manager.mode,
+            "memory_block": memory_block,
+            "retrieval": {
+                "matched_items": filtered_retrieval.matched_items,
+                "all_items": filtered_retrieval.all_items,
+                "match_confidence": filtered_retrieval.match_confidence,
+            },
+        }
+        return await self.ai_provider.generate_response(message=message_text, context=context)
+
+    async def _build_memory_block(self, *, conversation: Conversation) -> str:
+        conversation_manager = getattr(self.flow_manager, "conversation_manager", None)
+        if conversation_manager is None:
+            return ""
+
+        try:
+            return await ConversationMemoryBuilder.build_memory_block(
+                conversation_manager=conversation_manager,
+                conversation=conversation,
+                limit=8,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to build conversation memory for conversation '%s'.",
+                conversation.id,
+            )
+            return ""
+
+    def _filter_retrieval_for_profile(
+        self,
+        *,
+        retrieval: RetrievalResult,
+        profile: RuntimeBusinessProfile,
+    ) -> RetrievalResult:
+        if profile.show_prices:
+            return retrieval
+
+        return RetrievalResult(
+            matched_items=[self._without_price(item=item) for item in retrieval.matched_items],
+            all_items=[self._without_price(item=item) for item in retrieval.all_items],
+            match_confidence=retrieval.match_confidence,
+        )
+
+    def _without_price(self, *, item: dict[str, Any]) -> dict[str, Any]:
+        filtered = dict(item)
+        filtered.pop("price", None)
+        return filtered
 
     async def _handle_advisor_message(
         self,

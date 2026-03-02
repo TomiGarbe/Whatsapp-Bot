@@ -1,7 +1,11 @@
 """Interface contract for data source providers."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any
+
+from app.services.retrieval import RetrievalResult
 
 
 class DataSource(ABC):
@@ -32,3 +36,7 @@ class DataSource(ABC):
         """Confirm a previously created request."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def retrieve_relevant_context(self, query: str) -> RetrievalResult:
+        """Retrieve tenant-scoped RAG context using lightweight lexical scoring."""
+        raise NotImplementedError

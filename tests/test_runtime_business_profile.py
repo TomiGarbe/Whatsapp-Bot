@@ -17,6 +17,7 @@ class RuntimeBusinessProfileTestCase(unittest.TestCase):
         self.assertEqual(profile.mode, RuntimeBusinessProfile.ASSISTED_MODE)
         self.assertTrue(profile.handoff_enabled)
         self.assertEqual(profile.tone, RuntimeBusinessProfile.CERCANO_TONE)
+        self.assertFalse(profile.show_prices)
 
     def test_uses_mode_specific_tone_for_assisted(self) -> None:
         business_config = BusinessConfig(
@@ -32,6 +33,7 @@ class RuntimeBusinessProfileTestCase(unittest.TestCase):
         self.assertEqual(profile.mode, RuntimeBusinessProfile.ASSISTED_MODE)
         self.assertFalse(profile.handoff_enabled)
         self.assertEqual(profile.tone, RuntimeBusinessProfile.FORMAL_TONE)
+        self.assertFalse(profile.show_prices)
 
     def test_uses_mode_specific_tone_for_autonomous(self) -> None:
         business_config = BusinessConfig(
@@ -47,6 +49,7 @@ class RuntimeBusinessProfileTestCase(unittest.TestCase):
         self.assertEqual(profile.mode, RuntimeBusinessProfile.AUTONOMOUS_MODE)
         self.assertTrue(profile.handoff_enabled)
         self.assertEqual(profile.tone, RuntimeBusinessProfile.FORMAL_TONE)
+        self.assertFalse(profile.show_prices)
 
     def test_invalid_values_fallback_to_safe_defaults(self) -> None:
         business_config = BusinessConfig(
@@ -61,6 +64,22 @@ class RuntimeBusinessProfileTestCase(unittest.TestCase):
 
         self.assertEqual(profile.mode, RuntimeBusinessProfile.ASSISTED_MODE)
         self.assertEqual(profile.tone, RuntimeBusinessProfile.CERCANO_TONE)
+        self.assertFalse(profile.show_prices)
+
+    def test_show_prices_is_mode_aware(self) -> None:
+        business_config = BusinessConfig(
+            business_id=uuid4(),
+            mode="assisted",
+            handoff_enabled=True,
+            assisted_config={"show_prices": True},
+            autonomous_config={"show_prices": False},
+        )
+        profile = RuntimeBusinessProfile.from_business_config(business_config=business_config)
+        self.assertTrue(profile.show_prices)
+
+        business_config.mode = "autonomous"
+        profile = RuntimeBusinessProfile.from_business_config(business_config=business_config)
+        self.assertFalse(profile.show_prices)
 
 
 if __name__ == "__main__":

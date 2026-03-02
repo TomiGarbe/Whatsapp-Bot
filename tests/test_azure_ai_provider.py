@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import unittest
 
 from app.providers.ai.azure_ai import AzureAIProvider
+from app.services.retrieval import RetrievalResult
 from app.services.runtime_ai_context import RuntimeAIContext
 from app.services.runtime_business_profile import RuntimeBusinessProfile
 
@@ -69,6 +70,123 @@ class AzureAIProviderTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]["role"], "system")
         self.assertEqual(messages[0]["content"], context.build_system_prompt())
         self.assertEqual(messages[1], {"role": "user", "content": "Hola"})
+
+    async def test_generate_with_retrieval_hides_prices_when_profile_disables_them(self) -> None:
+        fake_client = _FakeClient()
+        context = self._build_context()
+        provider = AzureAIProvider(
+            context=context,
+            client=fake_client,
+            deployment="gpt-test",
+        )
+        retrieval = RetrievalResult(
+            matched_items=[
+                {
+                    "name": "Plan Basico",
+                    "description": "Incluye soporte mensual.",
+                    "price": 100.0,
+                }
+            ],
+            all_items=[],
+            match_confidence="single",
+        )
+        profile = RuntimeBusinessProfile(show_prices=False)
+
+        await provider.generate_with_retrieval(
+            user_message="quiero plan basico",
+            retrieval=retrieval,
+            profile=profile,
+        )
+
+        payload = fake_client.chat.completions.last_payload
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        messages = payload["messages"]
+        self.assertIsInstance(messages, list)
+        assert isinstance(messages, list)
+        retrieval_context = messages[1]["content"]
+        self.assertIn("Coincidencias encontradas", retrieval_context)
+        self.assertNotIn("Precio:", retrieval_context)
+
+    async def test_generate_with_retrieval_shows_full_catalog_when_no_match(self) -> None:
+        fake_client = _FakeClient()
+        context = self._build_context()
+        provider = AzureAIProvider(
+            context=context,
+            client=fake_client,
+            deployment="gpt-test",
+        )
+        retrieval = RetrievalResult(
+            matched_items=[],
+            all_items=[
+                {
+                    "name": "Plan Basico",
+                    "description": "Incluye soporte mensual.",
+                    "price": 100.0,
+                },
+                {
+                    "name": "Plan Premium",
+                    "description": "Incluye soporte prioritario.",
+                    "price": 250.0,
+                },
+            ],
+            match_confidence="none",
+        )
+        profile = RuntimeBusinessProfile(show_prices=True)
+
+        await provider.generate_with_retrieval(
+            user_message="tienen plan enterprise?",
+            retrieval=retrieval,
+            profile=profile,
+        )
+
+        payload = fake_client.chat.completions.last_payload
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        messages = payload["messages"]
+        self.assertIsInstance(messages, list)
+        assert isinstance(messages, list)
+        retrieval_context = messages[1]["content"]
+        self.assertIn("No hubo coincidencia exacta", retrieval_context)
+        self.assertIn("Catalogo completo", retrieval_context)
+        self.assertIn("Precio: 100.0", retrieval_context)
+
+    async def test_generate_with_retrieval_includes_memory_block_when_present(self) -> None:
+        fake_client = _FakeClient()
+        context = self._build_context()
+        provider = AzureAIProvider(
+            context=context,
+            client=fake_client,
+            deployment="gpt-test",
+        )
+        retrieval = RetrievalResult(
+            matched_items=[],
+            all_items=[],
+            match_confidence="none",
+        )
+        profile = RuntimeBusinessProfile(show_prices=False)
+        memory_block = "Historial reciente de la conversacion:\n\nUsuario: Hola\nAsistente: Hola"
+
+        await provider.generate_with_retrieval(
+            user_message="sigo con mi consulta",
+            retrieval=retrieval,
+            profile=profile,
+            memory_block=memory_block,
+        )
+
+        payload = fake_client.chat.completions.last_payload
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        messages = payload["messages"]
+        self.assertIsInstance(messages, list)
+        assert isinstance(messages, list)
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[0]["content"], context.build_system_prompt())
+        self.assertEqual(messages[1]["role"], "system")
+        self.assertEqual(messages[1]["content"], memory_block)
+        self.assertEqual(messages[2]["role"], "system")
+        self.assertIn("Contexto del negocio", messages[2]["content"])
+        self.assertEqual(messages[3], {"role": "user", "content": "sigo con mi consulta"})
 
 
 if __name__ == "__main__":

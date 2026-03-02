@@ -15,6 +15,7 @@ from app.models.conversation import Conversation
 from app.models.item import Item
 from app.models.request import Request
 from app.models.user import User
+from app.services.retrieval import RetrievalResult
 
 
 class SQLDataSource(DataSource):
@@ -122,6 +123,59 @@ class SQLDataSource(DataSource):
             raise
         self.db.refresh(request)
         return self._serialize_request(request)
+
+    async def retrieve_relevant_context(self, query: str) -> RetrievalResult:
+        all_items = await self.get_items()
+        normalized_query = query.strip().lower()
+        if not normalized_query:
+            return RetrievalResult(
+                matched_items=[],
+                all_items=all_items,
+                match_confidence="none",
+            )
+
+        query_tokens = normalized_query.split()
+        scored_matches: list[tuple[int, dict[str, Any]]] = []
+        for item in all_items:
+            score = 0
+            name = str(item.get("name", "")).lower()
+            description = str(item.get("description") or "").lower()
+            matched_token_count = 0
+
+            for token in query_tokens:
+                if token in name:
+                    score += 3
+                    matched_token_count += 1
+                elif token in description:
+                    score += 1
+                    matched_token_count += 1
+
+            if normalized_query == name:
+                score += 5
+
+            if query_tokens:
+                coverage_ratio = matched_token_count / len(query_tokens)
+                if coverage_ratio >= 0.6:
+                    score += 2
+
+            if score > 0:
+                scored_matches.append((score, item))
+
+        scored_matches.sort(key=lambda entry: entry[0], reverse=True)
+        matched_items = [item for _, item in scored_matches]
+
+        if len(matched_items) == 1:
+            match_confidence = "single"
+        elif len(matched_items) > 1:
+            match_confidence = "multiple"
+        else:
+            match_confidence = "none"
+
+        return RetrievalResult(
+            matched_items=matched_items,
+            all_items=all_items,
+            match_confidence=match_confidence,
+        )
 
     def _find_user_by_phone(self, *, phone: str) -> User | None:
         query = select(User).where(
