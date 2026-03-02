@@ -5,97 +5,170 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.providers.ai.azure_ai import AzureAIProvider
-from app.providers.data_sources.mock_data import MockDataSource
-from app.providers.messaging.mock_messaging import MockMessagingProvider
-from app.services.bot_service import BotService
-from app.services.conversation_manager import ConversationManager
-from app.services.flow_manager import FlowManager
-from app.services.intent_engine import IntentEngine
+from app.models.business import Business
+from app.services.runtime_factory import create_bot_service
 
 router = APIRouter()
-
-intent_engine = IntentEngine()
-conversation_manager = ConversationManager()
-data_source = MockDataSource()
-flow_manager = FlowManager(
-    conversation_manager=conversation_manager,
-    data_source=data_source,
-    mode="assisted",
-)
-
-bot_service = BotService(
-    ai_provider=AzureAIProvider(),
-    messaging_provider=MockMessagingProvider(),
-    intent_engine=intent_engine,
-    flow_manager=flow_manager,
-)
 
 
 @router.post("/webhook/messages")
 async def receive_webhook(payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, str]:
-    """Receive generic webhook payload and route it for persistence/AI handling."""
+    """Receive webhook payload, resolve tenant, and process each message."""
     normalized_messages = _normalize_webhook_payload(payload=payload)
     for message in normalized_messages:
         try:
-            await bot_service.handle_webhook(db=db, incoming_message=message)
+            business_phone = _extract_business_phone(incoming_message=message)
+            business = resolve_business_by_phone(db=db, phone=business_phone)
+            bot_service = create_bot_service(db=db, business=business)
+            incoming_message = {
+                **message,
+                "business_id": str(business.id),
+            }
+            await bot_service.handle_webhook(db=db, incoming_message=incoming_message)
+        except HTTPException:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "accepted"}
 
 
+def resolve_business_by_phone(db: Session, phone: str) -> Business:
+    """Resolve tenant by inbound WhatsApp business number."""
+    normalized_target = _normalize_phone(value=phone)
+    if not normalized_target:
+        raise HTTPException(status_code=404, detail="Business WhatsApp number is missing from webhook payload.")
+
+    exact_query = (
+        select(Business)
+        .where(
+            Business.whatsapp_number == phone.strip(),
+            Business.status == "active",
+        )
+        .limit(1)
+    )
+    exact_match = db.execute(exact_query).scalars().first()
+    if exact_match is not None:
+        return exact_match
+
+    candidate_query = select(Business).where(
+        Business.whatsapp_number.is_not(None),
+        Business.status == "active",
+    )
+    candidates = db.execute(candidate_query).scalars().all()
+    for business in candidates:
+        business_phone = business.whatsapp_number or ""
+        if _normalize_phone(value=business_phone) == normalized_target:
+            return business
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"No active business found for WhatsApp number '{phone}'.",
+    )
+
+
 def _normalize_webhook_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     normalized_messages: list[dict[str, Any]] = []
 
-    # ✅ Caso 1 — Payload plano (Postman testing)
+    # Flat payload (manual/local testing).
     if payload.get("phone") and payload.get("message"):
-        return [payload]
+        business_phone = _extract_business_phone_candidate(
+            payload.get("business_phone"),
+            payload.get("whatsapp_number"),
+            payload.get("to"),
+            payload.get("phone_number_id"),
+        )
+        return [
+            {
+                "phone": payload.get("phone"),
+                "message": payload.get("message"),
+                "message_id": payload.get("message_id") or payload.get("id"),
+                "timestamp": payload.get("timestamp"),
+                "sender_type": payload.get("sender_type"),
+                "is_agent": payload.get("is_agent"),
+                "from_me": payload.get("from_me"),
+                "business_phone": business_phone,
+            }
+        ]
 
+    top_level_business_phone = _extract_business_phone_candidate(
+        payload.get("business_phone"),
+        payload.get("whatsapp_number"),
+        payload.get("to"),
+        payload.get("phone_number_id"),
+    )
     base_fields = _extract_base_fields(payload=payload)
 
     direct_messages = payload.get("messages")
     if isinstance(direct_messages, list):
         normalized_messages.extend(
-            _normalize_messages(messages=direct_messages, base_fields=base_fields)
+            _normalize_messages(
+                messages=direct_messages,
+                base_fields=base_fields,
+                business_phone=top_level_business_phone,
+            )
         )
         return normalized_messages
 
     entries = payload.get("entry")
-    if isinstance(entries, list):
-        for entry in entries:
-            if not isinstance(entry, dict):
+    if not isinstance(entries, list):
+        return normalized_messages
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        changes = entry.get("changes")
+        if not isinstance(changes, list):
+            continue
+
+        for change in changes:
+            if not isinstance(change, dict):
                 continue
-            changes = entry.get("changes")
-            if not isinstance(changes, list):
+            value = change.get("value")
+            if not isinstance(value, dict):
                 continue
-            for change in changes:
-                if not isinstance(change, dict):
-                    continue
-                value = change.get("value")
-                if not isinstance(value, dict):
-                    continue
-                messages = value.get("messages")
-                if isinstance(messages, list):
-                    normalized_messages.extend(
-                        _normalize_messages(messages=messages, base_fields=base_fields)
+
+            metadata = value.get("metadata")
+            metadata_phone = None
+            if isinstance(metadata, dict):
+                metadata_phone = _extract_business_phone_candidate(
+                    metadata.get("display_phone_number"),
+                    metadata.get("phone_number_id"),
+                )
+
+            scoped_business_phone = _extract_business_phone_candidate(
+                metadata_phone,
+                value.get("to"),
+                top_level_business_phone,
+            )
+            messages = value.get("messages")
+            if isinstance(messages, list):
+                normalized_messages.extend(
+                    _normalize_messages(
+                        messages=messages,
+                        base_fields=base_fields,
+                        business_phone=scoped_business_phone,
                     )
+                )
 
     return normalized_messages
 
 
 def _extract_base_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        "business_id": payload.get("business_id"),
-        "user_id": payload.get("user_id"),
         "sender_type": payload.get("sender_type"),
         "is_agent": payload.get("is_agent"),
     }
 
 
-def _normalize_messages(messages: list[Any], base_fields: dict[str, Any]) -> list[dict[str, Any]]:
+def _normalize_messages(
+    messages: list[Any],
+    base_fields: dict[str, Any],
+    business_phone: str | None,
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for message in messages:
         if not isinstance(message, dict):
@@ -105,6 +178,12 @@ def _normalize_messages(messages: list[Any], base_fields: dict[str, Any]) -> lis
         if text is None:
             continue
 
+        message_business_phone = _extract_business_phone_candidate(
+            message.get("to"),
+            message.get("phone_number_id"),
+            message.get("business_phone"),
+            business_phone,
+        )
         normalized.append(
             {
                 **base_fields,
@@ -114,6 +193,7 @@ def _normalize_messages(messages: list[Any], base_fields: dict[str, Any]) -> lis
                 "timestamp": message.get("timestamp"),
                 "from_me": message.get("from_me"),
                 "sender_type": message.get("sender_type") or base_fields.get("sender_type"),
+                "business_phone": message_business_phone,
             }
         )
     return normalized
@@ -131,3 +211,34 @@ def _extract_text(*, message: dict[str, Any]) -> str | None:
             return str(body).strip()
 
     return None
+
+
+def _extract_business_phone(incoming_message: dict[str, Any]) -> str:
+    business_phone = _extract_business_phone_candidate(
+        incoming_message.get("business_phone"),
+        incoming_message.get("whatsapp_number"),
+        incoming_message.get("to"),
+        incoming_message.get("phone_number_id"),
+    )
+    if business_phone is None:
+        raise ValueError(
+            "Unable to resolve business phone number from webhook payload. "
+            "Expected metadata.display_phone_number, metadata.phone_number_id, or business_phone."
+        )
+    return business_phone
+
+
+def _extract_business_phone_candidate(*values: Any) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _normalize_phone(*, value: str | None) -> str:
+    if value is None:
+        return ""
+    return "".join(char for char in str(value) if char.isdigit())

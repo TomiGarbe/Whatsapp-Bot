@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from app.models.advisor import Advisor
 from app.models.conversation import Conversation
+from app.models.user import User
 from app.services.intent_engine import IntentEngine
 from app.services.message_router import MessageRouter
 
@@ -21,7 +22,15 @@ class StubFlowManager:
         self.responses = responses or {}
         self.calls: list[dict[str, str]] = []
 
-    async def handle(self, intent: str, user: str, message: str) -> str | None:
+    async def handle(
+        self,
+        *,
+        intent: str,
+        user: str,
+        message: str,
+        conversation: Conversation,
+    ) -> str | None:
+        del conversation
         self.calls.append({"intent": intent, "user": user, "message": message})
         return self.responses.get(intent)
 
@@ -90,6 +99,15 @@ class RecordingMessageRouter(MessageRouter):
         self.client_identity: tuple[str, str] = ("Cliente", "+5490000000000")
         self.command_conversation: Conversation | None = None
         self.fallback_command_conversation: Conversation | None = None
+        self.user = User(
+            business_id=conversation.business_id,
+            external_id="user-test",
+            phone="+5490000000000",
+            locale="es",
+            is_active=True,
+            profile={},
+        )
+        self.user.id = conversation.user_id
 
     def _get_or_create_active_conversation(
         self,
@@ -101,6 +119,19 @@ class RecordingMessageRouter(MessageRouter):
         self.conversation.business_id = business_id
         self.conversation.user_id = user_id
         return self.conversation
+
+    def _get_or_create_user(
+        self,
+        *,
+        db: StubSession,
+        business_id: UUID,
+        phone: str,
+    ) -> User:
+        del db
+        self.user.business_id = business_id
+        self.user.phone = phone
+        self.user.external_id = phone
+        return self.user
 
     def _persist_message(
         self,
@@ -127,9 +158,16 @@ class RecordingMessageRouter(MessageRouter):
         del business_id
         return self.active_advisor_for_business
 
-    def _get_active_advisor_by_phone(self, *, db: StubSession, advisor_phone: str) -> Advisor | None:
+    def _get_active_advisor_by_phone(
+        self,
+        *,
+        db: StubSession,
+        advisor_phone: str,
+        business_id: UUID | None = None,
+    ) -> Advisor | None:
         del db
         del advisor_phone
+        del business_id
         return self.active_advisor_by_phone
 
     def _get_active_human_conversation_for_advisor_client(

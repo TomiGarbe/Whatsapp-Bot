@@ -139,7 +139,12 @@ class MessageRouter:
                 await self.messaging_provider.send_message(user=advisor.phone.strip(), message=advisor_message)
             return
 
-        flow_response = await self.flow_manager.handle(intent=intent, user=phone, message=message_text)
+        flow_response = await self.flow_manager.handle(
+            intent=intent,
+            user=phone,
+            message=message_text,
+            conversation=conversation,
+        )
         if flow_response is None:
             context = {
                 "user": phone,
@@ -173,12 +178,17 @@ class MessageRouter:
         phone: str,
         incoming_message: dict[str, Any],
     ) -> None:
+        business_id = self._extract_optional_uuid(incoming_message=incoming_message, key="business_id")
         message_text = self._extract_message_text(incoming_message=incoming_message)
         payload = self._build_payload(phone=phone, incoming_message=incoming_message)
         close_client_phone = self._parse_close_command(message_text=message_text)
 
         if close_client_phone is not None:
-            advisor = self._get_active_advisor_by_phone(db=db, advisor_phone=phone)
+            advisor = self._get_active_advisor_by_phone(
+                db=db,
+                advisor_phone=phone,
+                business_id=business_id,
+            )
             if advisor is None:
                 fallback_conversation = self._try_resolve_active_conversation(db=db, incoming_message=incoming_message)
                 if fallback_conversation is not None:
@@ -231,6 +241,8 @@ class MessageRouter:
                 payload=payload,
             )
             conversation.status = "closed"
+            conversation.control_mode = "ai"
+            conversation.assigned_advisor_id = None
             conversation.closed_at = func.now()
             db.add(conversation)
             try:
@@ -268,13 +280,18 @@ class MessageRouter:
             )
 
         phone = self._extract_sender_phone(incoming_message=incoming_message)
+        scoped_business_id = self._extract_optional_uuid(incoming_message=incoming_message, key="business_id")
+        where_conditions = [
+            User.phone == phone,
+            Conversation.status == "active",
+        ]
+        if scoped_business_id is not None:
+            where_conditions.append(Conversation.business_id == scoped_business_id)
+
         query = (
             select(Conversation)
             .join(User, Conversation.user_id == User.id)
-            .where(
-                User.phone == phone,
-                Conversation.status == "active",
-            )
+            .where(*where_conditions)
             .order_by(Conversation.started_at.desc())
             .limit(1)
         )
@@ -309,6 +326,15 @@ class MessageRouter:
             return UUID(str(raw_value))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Incoming message has invalid UUID for '{key}'.") from exc
+
+    def _extract_optional_uuid(self, *, incoming_message: dict[str, Any], key: str) -> UUID | None:
+        raw_value = incoming_message.get(key)
+        if raw_value is None:
+            return None
+        try:
+            return UUID(str(raw_value))
+        except (TypeError, ValueError):
+            return None
 
     def _get_or_create_active_conversation(
         self,
@@ -412,13 +438,23 @@ class MessageRouter:
         )
         return db.execute(query).scalars().first()
 
-    def _get_active_advisor_by_phone(self, *, db: Session, advisor_phone: str) -> Advisor | None:
+    def _get_active_advisor_by_phone(
+        self,
+        *,
+        db: Session,
+        advisor_phone: str,
+        business_id: UUID | None = None,
+    ) -> Advisor | None:
+        where_conditions = [
+            Advisor.phone == advisor_phone,
+            Advisor.is_active.is_(True),
+        ]
+        if business_id is not None:
+            where_conditions.append(Advisor.business_id == business_id)
+
         query = (
             select(Advisor)
-            .where(
-                Advisor.phone == advisor_phone,
-                Advisor.is_active.is_(True),
-            )
+            .where(*where_conditions)
             .order_by(Advisor.created_at.asc())
             .limit(1)
         )
