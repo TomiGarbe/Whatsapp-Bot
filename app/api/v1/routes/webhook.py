@@ -19,6 +19,7 @@ router = APIRouter()
 async def receive_webhook(payload: dict[str, Any], db: Session = Depends(get_db)) -> dict[str, str]:
     """Receive webhook payload, resolve tenant, and process each message."""
     normalized_messages = _normalize_webhook_payload(payload=payload)
+    final_response = ""
     for message in normalized_messages:
         try:
             business_phone = _extract_business_phone(incoming_message=message)
@@ -29,11 +30,14 @@ async def receive_webhook(payload: dict[str, Any], db: Session = Depends(get_db)
                 "business_id": str(business.id),
             }
             response = await bot_service.handle_webhook(db=db, incoming_message=incoming_message)
+            normalized_response = response or ""
+            if normalized_response:
+                final_response = normalized_response
         except HTTPException:
             raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"response = ": response}
+    return {"reply": final_response or ""}
 
 
 def resolve_business_by_phone(db: Session, phone: str) -> Business:

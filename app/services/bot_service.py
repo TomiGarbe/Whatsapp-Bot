@@ -32,9 +32,11 @@ class BotService:
             messaging_provider=messaging_provider,
         )
 
-    async def handle_webhook(self, db: Session, incoming_message: dict[str, Any]) -> None:
-        """Receive webhook payload and route it through MessageRouter."""
+    async def handle_webhook(self, db: Session, incoming_message: dict[str, Any]) -> str:
+        """Receive webhook payload, route it, and return the last generated reply."""
         await self.message_router.route_message(db=db, incoming_message=incoming_message)
+        sender_phone = self._extract_sender_phone(incoming_message=incoming_message)
+        return self.message_router.get_last_response(user=sender_phone) or ""
 
     async def handle_message(
         self,
@@ -53,7 +55,13 @@ class BotService:
             "message": message,
             "sender_type": "user",
         }
-        await self.handle_webhook(db=db, incoming_message=incoming_message)
-        response = self.message_router.get_last_response(user=user) or ""
+        response = await self.handle_webhook(db=db, incoming_message=incoming_message)
         return {"user": user, "response": response}
+
+    def _extract_sender_phone(self, *, incoming_message: dict[str, Any]) -> str:
+        for key in ("phone", "user", "from", "from_phone", "sender_phone", "wa_id"):
+            value = incoming_message.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
 
