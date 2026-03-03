@@ -28,12 +28,12 @@ async def receive_webhook(payload: dict[str, Any], db: Session = Depends(get_db)
                 **message,
                 "business_id": str(business.id),
             }
-            await bot_service.handle_webhook(db=db, incoming_message=incoming_message)
+            response = await bot_service.handle_webhook(db=db, incoming_message=incoming_message)
         except HTTPException:
             raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"status": "accepted"}
+    return {"response = ": response}
 
 
 def resolve_business_by_phone(db: Session, phone: str) -> Business:
