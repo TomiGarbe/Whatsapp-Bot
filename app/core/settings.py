@@ -23,11 +23,18 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     database_url: str = Field(..., alias="DATABASE_URL")
-    
+
+    ai_provider: str = Field(default="auto", alias="AI_PROVIDER")
+    messaging_provider: str = Field(default="auto", alias="MESSAGING_PROVIDER")
+
     azure_openai_endpoint: str | None = Field(default=None, alias="AZURE_OPENAI_ENDPOINT")
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_deployment: str | None = Field(default=None, alias="AZURE_OPENAI_DEPLOYMENT")
     azure_openai_api_version: str | None = Field(default=None, alias="AZURE_OPENAI_API_VERSION")
+
+    whatsapp_cloud_access_token: str | None = Field(default=None, alias="WHATSAPP_CLOUD_ACCESS_TOKEN")
+    whatsapp_cloud_phone_number_id: str | None = Field(default=None, alias="WHATSAPP_CLOUD_PHONE_NUMBER_ID")
+    whatsapp_cloud_api_version: str = Field(default="v22.0", alias="WHATSAPP_CLOUD_API_VERSION")
 
     if SettingsConfigDict is not None:
         model_config = SettingsConfigDict(

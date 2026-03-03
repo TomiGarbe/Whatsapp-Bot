@@ -18,7 +18,10 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.services.flow_manager import FlowManager
+from app.services.conversation_memory import ConversationMemoryBuilder
 from app.services.intent_engine import IntentEngine
+from app.services.retrieval import RetrievalResult
+from app.services.runtime_business_profile import RuntimeBusinessProfile
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +105,9 @@ class MessageRouter:
             return
 
         intent = self.intent_engine.detect_intent(message=message_text)
-        if intent == "human_handoff":
+        retrieval = await self._retrieve_relevant_context(message_text=message_text)
+        should_route_handoff, blocked_handoff_message = self._evaluate_handoff(intent=intent)
+        if should_route_handoff:
             advisor = self._get_active_advisor(db=db, business_id=conversation.business_id)
             conversation.control_mode = "human"
             conversation.assigned_advisor_id = advisor.id if advisor is not None else None
@@ -113,7 +118,7 @@ class MessageRouter:
                 db.rollback()
                 raise
 
-            response = "Un asesor continuará la conversación."
+            response = self._get_handoff_acknowledgement()
             self._persist_message(
                 db=db,
                 conversation=conversation,
@@ -132,28 +137,51 @@ class MessageRouter:
                     fallback_phone=phone,
                 )
                 advisor_message = (
-                    "Nueva conversación en modo humano.\n"
+                    "Nueva conversacion en modo humano.\n"
                     f"Cliente: {client_name}\n"
-                    f"Teléfono: {client_phone}"
+                    f"Telefono: {client_phone}"
                 )
                 await self.messaging_provider.send_message(user=advisor.phone.strip(), message=advisor_message)
             return
+        if blocked_handoff_message is not None:
+            response = blocked_handoff_message
+            self._persist_message(
+                db=db,
+                conversation=conversation,
+                sender_type="assistant",
+                direction="outbound",
+                content=response,
+                payload={"intent": intent},
+            )
+            await self.messaging_provider.send_message(user=phone, message=response)
+            self._last_response_by_user[phone] = response
+            return
 
-        flow_response = await self.flow_manager.handle(intent=intent, user=phone, message=message_text)
-        if flow_response is None:
-            context = {
-                "user": phone,
-                "conversation_id": str(conversation.id),
-                "business_id": str(conversation.business_id),
-                "user_id": str(conversation.user_id),
-                "control_mode": conversation.control_mode,
-                "context": conversation.context,
-                "intent": intent,
-                "mode": self.flow_manager.mode,
-            }
-            response = await self.ai_provider.generate_response(message=message_text, context=context)
+        if self._is_structured_intent(intent=intent):
+            flow_response = await self.flow_manager.handle(
+                intent=intent,
+                user=phone,
+                message=message_text,
+                conversation=conversation,
+            )
+            if flow_response is None:
+                response = await self._generate_ai_with_retrieval(
+                    phone=phone,
+                    message_text=message_text,
+                    intent=intent,
+                    conversation=conversation,
+                    retrieval=retrieval,
+                )
+            else:
+                response = flow_response
         else:
-            response = flow_response
+            response = await self._generate_ai_with_retrieval(
+                phone=phone,
+                message_text=message_text,
+                intent=intent,
+                conversation=conversation,
+                retrieval=retrieval,
+            )
 
         self._persist_message(
             db=db,
@@ -166,6 +194,139 @@ class MessageRouter:
         await self.messaging_provider.send_message(user=phone, message=response)
         self._last_response_by_user[phone] = response
 
+    def _evaluate_handoff(self, *, intent: str) -> tuple[bool, str | None]:
+        evaluator = getattr(self.flow_manager, "evaluate_handoff", None)
+        if not callable(evaluator):
+            return intent == "human_handoff", None
+
+        decision = evaluator(intent=intent)
+        should_route = bool(getattr(decision, "should_route_to_human", False))
+        blocked_message_raw = getattr(decision, "blocked_message", None)
+        if isinstance(blocked_message_raw, str) and blocked_message_raw.strip():
+            return should_route, blocked_message_raw
+        return should_route, None
+
+    def _get_handoff_acknowledgement(self) -> str:
+        resolver = getattr(self.flow_manager, "get_handoff_acknowledgement", None)
+        if callable(resolver):
+            response = resolver()
+            if isinstance(response, str) and response.strip():
+                return response
+        return "Un asesor continuara la conversacion."
+
+    def _is_structured_intent(self, *, intent: str) -> bool:
+        return intent in {"booking_intent", "confirmation", "cancellation"}
+
+    async def _retrieve_relevant_context(self, *, message_text: str) -> RetrievalResult:
+        data_source = getattr(self.flow_manager, "data_source", None)
+        retriever = getattr(data_source, "retrieve_relevant_context", None)
+        if not callable(retriever):
+            return self._empty_retrieval_result()
+
+        try:
+            retrieval = await retriever(query=message_text)
+        except Exception:
+            logger.exception("Failed to retrieve tenant context for message '%s'.", message_text)
+            return self._empty_retrieval_result()
+
+        if isinstance(retrieval, RetrievalResult):
+            return retrieval
+        return self._empty_retrieval_result()
+
+    def _empty_retrieval_result(self) -> RetrievalResult:
+        return RetrievalResult(
+            matched_items=[],
+            all_items=[],
+            match_confidence="none",
+        )
+
+    async def _generate_ai_with_retrieval(
+        self,
+        *,
+        phone: str,
+        message_text: str,
+        intent: str,
+        conversation: Conversation,
+        retrieval: RetrievalResult,
+    ) -> str:
+        profile = getattr(self.flow_manager, "profile", RuntimeBusinessProfile())
+        memory_block = await self._build_memory_block(conversation=conversation)
+        filtered_retrieval = self._filter_retrieval_for_profile(
+            retrieval=retrieval,
+            profile=profile,
+        )
+        generator = getattr(self.ai_provider, "generate_with_retrieval", None)
+        if callable(generator):
+            try:
+                return await generator(
+                    user_message=message_text,
+                    retrieval=filtered_retrieval,
+                    profile=profile,
+                    memory_block=memory_block,
+                )
+            except TypeError:
+                return await generator(
+                    user_message=message_text,
+                    retrieval=filtered_retrieval,
+                    profile=profile,
+                )
+
+        context = {
+            "user": phone,
+            "conversation_id": str(conversation.id),
+            "business_id": str(conversation.business_id),
+            "user_id": str(conversation.user_id),
+            "control_mode": conversation.control_mode,
+            "context": conversation.context,
+            "intent": intent,
+            "mode": self.flow_manager.mode,
+            "memory_block": memory_block,
+            "retrieval": {
+                "matched_items": filtered_retrieval.matched_items,
+                "all_items": filtered_retrieval.all_items,
+                "match_confidence": filtered_retrieval.match_confidence,
+            },
+        }
+        return await self.ai_provider.generate_response(message=message_text, context=context)
+
+    async def _build_memory_block(self, *, conversation: Conversation) -> str:
+        conversation_manager = getattr(self.flow_manager, "conversation_manager", None)
+        if conversation_manager is None:
+            return ""
+
+        try:
+            return await ConversationMemoryBuilder.build_memory_block(
+                conversation_manager=conversation_manager,
+                conversation=conversation,
+                limit=8,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to build conversation memory for conversation '%s'.",
+                conversation.id,
+            )
+            return ""
+
+    def _filter_retrieval_for_profile(
+        self,
+        *,
+        retrieval: RetrievalResult,
+        profile: RuntimeBusinessProfile,
+    ) -> RetrievalResult:
+        if profile.show_prices:
+            return retrieval
+
+        return RetrievalResult(
+            matched_items=[self._without_price(item=item) for item in retrieval.matched_items],
+            all_items=[self._without_price(item=item) for item in retrieval.all_items],
+            match_confidence=retrieval.match_confidence,
+        )
+
+    def _without_price(self, *, item: dict[str, Any]) -> dict[str, Any]:
+        filtered = dict(item)
+        filtered.pop("price", None)
+        return filtered
+
     async def _handle_advisor_message(
         self,
         *,
@@ -173,12 +334,17 @@ class MessageRouter:
         phone: str,
         incoming_message: dict[str, Any],
     ) -> None:
+        business_id = self._extract_optional_uuid(incoming_message=incoming_message, key="business_id")
         message_text = self._extract_message_text(incoming_message=incoming_message)
         payload = self._build_payload(phone=phone, incoming_message=incoming_message)
         close_client_phone = self._parse_close_command(message_text=message_text)
 
         if close_client_phone is not None:
-            advisor = self._get_active_advisor_by_phone(db=db, advisor_phone=phone)
+            advisor = self._get_active_advisor_by_phone(
+                db=db,
+                advisor_phone=phone,
+                business_id=business_id,
+            )
             if advisor is None:
                 fallback_conversation = self._try_resolve_active_conversation(db=db, incoming_message=incoming_message)
                 if fallback_conversation is not None:
@@ -231,6 +397,8 @@ class MessageRouter:
                 payload=payload,
             )
             conversation.status = "closed"
+            conversation.control_mode = "ai"
+            conversation.assigned_advisor_id = None
             conversation.closed_at = func.now()
             db.add(conversation)
             try:
@@ -268,13 +436,18 @@ class MessageRouter:
             )
 
         phone = self._extract_sender_phone(incoming_message=incoming_message)
+        scoped_business_id = self._extract_optional_uuid(incoming_message=incoming_message, key="business_id")
+        where_conditions = [
+            User.phone == phone,
+            Conversation.status == "active",
+        ]
+        if scoped_business_id is not None:
+            where_conditions.append(Conversation.business_id == scoped_business_id)
+
         query = (
             select(Conversation)
             .join(User, Conversation.user_id == User.id)
-            .where(
-                User.phone == phone,
-                Conversation.status == "active",
-            )
+            .where(*where_conditions)
             .order_by(Conversation.started_at.desc())
             .limit(1)
         )
@@ -309,6 +482,15 @@ class MessageRouter:
             return UUID(str(raw_value))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Incoming message has invalid UUID for '{key}'.") from exc
+
+    def _extract_optional_uuid(self, *, incoming_message: dict[str, Any], key: str) -> UUID | None:
+        raw_value = incoming_message.get(key)
+        if raw_value is None:
+            return None
+        try:
+            return UUID(str(raw_value))
+        except (TypeError, ValueError):
+            return None
 
     def _get_or_create_active_conversation(
         self,
@@ -412,13 +594,23 @@ class MessageRouter:
         )
         return db.execute(query).scalars().first()
 
-    def _get_active_advisor_by_phone(self, *, db: Session, advisor_phone: str) -> Advisor | None:
+    def _get_active_advisor_by_phone(
+        self,
+        *,
+        db: Session,
+        advisor_phone: str,
+        business_id: UUID | None = None,
+    ) -> Advisor | None:
+        where_conditions = [
+            Advisor.phone == advisor_phone,
+            Advisor.is_active.is_(True),
+        ]
+        if business_id is not None:
+            where_conditions.append(Advisor.business_id == business_id)
+
         query = (
             select(Advisor)
-            .where(
-                Advisor.phone == advisor_phone,
-                Advisor.is_active.is_(True),
-            )
+            .where(*where_conditions)
             .order_by(Advisor.created_at.asc())
             .limit(1)
         )
@@ -551,3 +743,4 @@ class MessageRouter:
             return self._resolve_active_conversation(db=db, incoming_message=incoming_message)
         except ValueError:
             return None
+
