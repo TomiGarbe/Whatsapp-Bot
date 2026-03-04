@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
 from app.services.message_router import MessageRouter, SenderResolver
+from app.utils.whatsapp_formatting import normalize_whatsapp_formatting
 
 
 class BotService:
@@ -56,7 +57,8 @@ class BotService:
             "sender_type": "user",
         }
         response = await self.handle_webhook(db=db, incoming_message=incoming_message)
-        return {"user": user, "response": response}
+        normalized_response = normalize_whatsapp_formatting(response)
+        return {"user": user, "response": normalized_response}
 
     def _extract_sender_phone(self, *, incoming_message: dict[str, Any]) -> str:
         for key in ("phone", "user", "from", "from_phone", "sender_phone", "wa_id"):
