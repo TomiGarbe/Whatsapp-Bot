@@ -4,6 +4,7 @@ from app.interfaces.ai_provider import AIProvider
 from app.interfaces.messaging_provider import MessagingProvider
 from app.services.flow_manager import FlowManager
 from app.services.intent_engine import IntentEngine
+from app.utils.whatsapp_formatting import normalize_whatsapp_formatting
 
 
 class BotService:
@@ -39,9 +40,10 @@ class BotService:
         else:
             response = flow_response
 
-        await self.messaging_provider.send_message(user=user, message=response)
+        normalized_response = normalize_whatsapp_formatting(response)
+        await self.messaging_provider.send_message(user=user, message=normalized_response)
         return {
             "user": user,
-            "response": response,
+            "response": normalized_response,
         }
 
